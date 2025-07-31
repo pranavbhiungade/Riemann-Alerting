@@ -1,28 +1,22 @@
 import subprocess
 from riemann_client.transport import TCPTransport
 from riemann_client.client import Client
-from riemann_client.riemann_pb2 import Event
+from riemann_client.riemann_pb2 import Event, Attribute
 
 RIEMANN_HOST = "192.168.64.11"
 RIEMANN_PORT = 5555
 LOG_COMMAND = ["multipass", "exec", "salt-minion-3", "--", "tail", "-F", "/var/log/nginx/grafana_access.log"]
 
-def extract_log_details(line):
+def extract_ip_method_code(line):
     try:
         parts = line.strip().split()
         ip = parts[0]
         method = parts[5].strip('"')
         code = int(parts[8])
-        agent_index = line.index('"python-requests')
-        agent = line[agent_index+1:].split('"')[0]  # value inside the last quotes
-        rt = ut = 0.0
-        if "rt=" in line and "ut=" in line:
-            rt = float(line.split("rt=")[1].split()[0])
-            ut = float(line.split("ut=")[1].split()[0])
-        return ip, method, code, agent, rt, ut
+        return ip, method, code
     except Exception as e:
         print(f"[!] Failed to parse line: {line.strip()} | Error: {e}")
-        return None, None, None, None, None, None
+        return None, None, None
 
 def main():
     try:
@@ -38,18 +32,22 @@ def main():
 
     try:
         for line in process.stdout:
-            ip, method, code, agent, rt, ut = extract_log_details(line)
-            if ip and method and code is not None:
+            ip, method, code = extract_ip_method_code(line)
+            if ip and method and code:
                 state = "ok" if 200 <= code < 300 else "error"
                 service_name = f"nginx {method} {code} from {ip}"
-                description = f"{method} from {ip} -> code={code}, rt={rt}s, ut={ut}s, agent={agent}"
+                description = f"{method} request from {ip} returned {code}"
                 event = Event(
                     host="salt-minion-3",
                     service=service_name,
                     metric_f=1.0,
                     state=state,
                     description=description,
-                    ttl=60
+                    ttl=60,
+                    attributes=[
+                        Attribute(key="method", value=method),
+                        Attribute(key="response_code", value=str(code))
+                    ]
                 )
                 client.send_event(event)
                 print(f"[✓] Sent: {description}")
